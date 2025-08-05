@@ -15,5 +15,5 @@ From simple "Hello World" programs to memory management, pointers, and full proj
 
  Tools
 - OS: Kali Linux  
-- Editor: nano  
+- Editor: nano and gedit
 - Compiler: gcc
