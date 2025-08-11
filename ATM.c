@@ -1,5 +1,5 @@
-/* ATM simulation Console App
-The output should be like this:
+/* A mini projecrt 
+ATM simulation Console App
 */
 #include <stdio.h>
 int main() {
