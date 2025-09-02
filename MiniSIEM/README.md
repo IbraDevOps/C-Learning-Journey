@@ -1,10 +1,10 @@
-# Mini SIEM Log Analyzer (C)
+# Mini SIEM Log Analyzer in C
 
-**Goal:** A fast, simple C tool that flags common indicators from logs:
+Goal: A fast, simple C tool that flags common indicators from logs:
 - SSH auth brute-force attempts (counts `Failed password` per IP).
 - Apache access scans (counts repeated `404` per IP).
 
-This is part of my **C-Learning-Journey** capstone.
+This is part of my C-Learning-Journey** capstone.
 
 ## Features (MVP)
 - Parse large log files line-by-line (no full file read).
