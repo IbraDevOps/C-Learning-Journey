@@ -1,17 +1,17 @@
-# Simple Encrypted Password Vault (in C)
+# Simple Encrypted Password Vault in C Lang
 
 ##  Goal
 Build a minimal password manager in C that:
 - Stores service/username/password entries.
-- Encrypts them with a **master password** before writing to disk.
+- Encrypts them with a master password before writing to disk.
 - Allows secure retrieval after master password verification.
 
-This project is **educational**: it demonstrates 
+This project is educational: it demonstrates 
 - Secure coding in C (file I/O, memory, structs).
 - Basics of encryption (AES-GCM + PBKDF2).
 - Why weak key management (like XOR) is insecure.
 
----
+
 
 ##  Features
 - `init` → Create a new encrypted vault file.
