@@ -29,6 +29,11 @@ The goal is to understand:
    - Built with `-fno-stack-protector` to reproduce the crash.
    - Rebuilt with **AddressSanitizer** (`-fsanitize=address`) to catch overflow automatically with detailed error report.
 
----
+
+
+
+For a full breakdown with screenshots, gdb output, and explanation of stack memory behavior, check out my Medium article:
+
+ [BufferOverflow101 Lab — Step-by-Step Walkthrough](https://medium.com/@isheikh_24798/bufferoverflow101-lab-4c93f669ab70)
 
 
