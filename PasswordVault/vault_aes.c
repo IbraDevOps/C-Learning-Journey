@@ -1,4 +1,4 @@
-// vault_aes.c — AES-GCM + PBKDF2 password vault (portable, no getpass)
+// vault_aes.c — AES-GCM + PBKDF2 password vault (with rekey/search/remove)
 // Build: gcc -std=gnu99 -Wall -Wextra -Wpedantic -O2 -o vault_aes vault_aes.c crypto.c -lcrypto
 
 #define _POSIX_C_SOURCE 200809L
@@ -14,18 +14,17 @@
 #include "crypto.h"
 
 /* --------- Vault format constants --------- */
-#define MAGIC       "VAES1\n"
-#define MAGIC_LEN   6
+#define MAGIC         "VAES1\n"
+#define MAGIC_LEN     6
+#define VAULT_FILE    "vault_aes.dat"
 
-#define VAULT_FILE  "vault_aes.dat"
+#define SALT_LEN      16
+#define NONCE_LEN     12
+#define TAG_LEN       16
+#define KEY_LEN       32            /* AES-256 */
+#define PBKDF2_ITERS  200000u       /* tune for your box */
 
-#define SALT_LEN    16
-#define NONCE_LEN   12
-#define TAG_LEN     16
-#define KEY_LEN     32          /* AES-256 */
-#define PBKDF2_ITERS 200000u     /* adjust to taste */
-
-#define MAX_LINE    1024
+#define MAX_LINE      1024
 
 /* --------- small utils --------- */
 static void die(const char *m){ perror(m); exit(1); }
@@ -38,7 +37,7 @@ static char *xstrdup(const char *s){
     return p;
 }
 
-/* Hidden password prompt (portable) */
+/* Hidden password prompt (portable, no getpass) */
 static char *prompt_hidden(const char *prompt){
     static char buf[256];
     struct termios oldt, newt;
@@ -53,7 +52,6 @@ static char *prompt_hidden(const char *prompt){
 
     if(!fgets(buf, sizeof buf, stdin)) return NULL;
 
-    /* restore */
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &oldt);
     fprintf(stderr, "\n");
 
@@ -139,20 +137,13 @@ static void write_all_atomic(const char *path, const uint8_t *data, size_t n){
 
 /* --------- AES-GCM vault read/write --------- */
 /* Layout:
-   MAGIC(6) |
-   iters(4 LE) |
-   salt(16) |
-   nonce(12) |
-   ct_len(4 LE) |
-   ciphertext(ct_len) |
-   tag(16)
+   MAGIC(6) | iters(4 LE) | salt(16) | nonce(12) | ct_len(4 LE) | ciphertext | tag(16)
 */
 
 static void save_vault(const Lines *L, const char *password){
-    /* generate fresh salt + nonce each save */
-    uint8_t salt[SALT_LEN];
-    uint8_t nonce[NONCE_LEN];
-    if(crypto_rand(salt, SALT_LEN)!=0)  die("RAND(salt)");
+    /* fresh salt + nonce */
+    uint8_t salt[SALT_LEN], nonce[NONCE_LEN];
+    if(crypto_rand(salt, SALT_LEN)!=0)   die("RAND(salt)");
     if(crypto_rand(nonce, NONCE_LEN)!=0) die("RAND(nonce)");
 
     /* serialize */
@@ -167,17 +158,13 @@ static void save_vault(const Lines *L, const char *password){
     /* encrypt */
     uint8_t *ct = (uint8_t*)malloc(plen); if(!ct) die("malloc");
     uint8_t tag[TAG_LEN];
-    if(aes256gcm_encrypt(key, nonce, NONCE_LEN,
-                         plain, plen,
-                         NULL, 0,
-                         ct, tag, TAG_LEN) != 0){
+    if(aes256gcm_encrypt(key, nonce, NONCE_LEN, plain, plen, NULL, 0, ct, tag, TAG_LEN) != 0){
         fprintf(stderr, "encrypt failed\n"); exit(1);
     }
 
-    /* assemble file */
-    uint32_t iters_le = PBKDF2_ITERS; /* host LE assumed */
+    /* assemble */
+    uint32_t iters_le  = PBKDF2_ITERS;
     uint32_t ct_len_le = (uint32_t)plen;
-
     size_t outsz = MAGIC_LEN + 4 + SALT_LEN + NONCE_LEN + 4 + (size_t)ct_len_le + TAG_LEN;
     uint8_t *out = (uint8_t*)malloc(outsz); if(!out) die("malloc");
 
@@ -230,11 +217,7 @@ static void load_vault(Lines *L, const char *password){
     unsigned char *plain = (unsigned char*)malloc((size_t)ct_len + 1);
     if(!plain) die("malloc");
 
-    if(aes256gcm_decrypt(key, nonce, NONCE_LEN,
-                         ct, ct_len,
-                         NULL, 0,
-                         tag, TAG_LEN,
-                         plain) != 0){
+    if(aes256gcm_decrypt(key, nonce, NONCE_LEN, ct, ct_len, NULL, 0, tag, TAG_LEN, plain) != 0){
         secure_bzero(key, KEY_LEN);
         secure_bzero(plain, ct_len); free(plain);
         secure_bzero(buf, sz); free(buf);
@@ -250,8 +233,24 @@ static void load_vault(Lines *L, const char *password){
     secure_bzero(buf, sz); free(buf);
 }
 
-/* --------- commands --------- */
+/* --------- Phase 4 helpers (case-insensitive search) --------- */
+static int ieq(char a, char b){
+    if(a>='A'&&a<='Z') a = (char)(a - 'A' + 'a');
+    if(b>='A'&&b<='Z') b = (char)(b - 'A' + 'a');
+    return a==b;
+}
+static int contains_icase(const char *hay, const char *needle){
+    if(!needle || !*needle) return 1;
+    size_t n = strlen(needle);
+    for(const char *p=hay; *p; p++){
+        size_t i=0;
+        while(i<n && p[i] && ieq(p[i], needle[i])) i++;
+        if(i==n) return 1;
+    }
+    return 0;
+}
 
+/* --------- commands --------- */
 static int cmd_init(void){
     if(file_exists(VAULT_FILE)){
         fprintf(stderr, "Refusing to overwrite existing %s\n", VAULT_FILE);
@@ -267,15 +266,11 @@ static int cmd_init(void){
         free(pw1); free(pw2);
         return 1;
     }
-
-    Lines L = {0}; /* empty vault */
+    Lines L = (Lines){0}; /* empty */
     save_vault(&L, pw1);
-
-    secure_bzero(pw1, strlen(pw1));
-    secure_bzero(pw2, strlen(pw2));
+    secure_bzero(pw1, strlen(pw1)); secure_bzero(pw2, strlen(pw2));
     free(pw1); free(pw2);
     lines_free(&L);
-
     printf("Initialized AES vault: %s\n", VAULT_FILE);
     return 0;
 }
@@ -290,18 +285,13 @@ static int cmd_add(const char *svc, const char *usr, const char *pwd){
         fprintf(stderr,"Tabs/newlines not allowed in fields.\n");
         return 1;
     }
-
     char *pw = prompt_hidden("Master password: ");
     if(!pw){ fprintf(stderr,"password input failed\n"); return 1; }
-
     Lines L; load_vault(&L, pw);
-
     char line[MAX_LINE];
     snprintf(line, sizeof line, "%s\t%s\t%s", svc, usr, pwd);
     lines_push(&L, line);
-
     save_vault(&L, pw);
-
     secure_bzero(pw, strlen(pw)); free(pw);
     lines_free(&L);
     printf("Added entry for service: %s\n", svc);
@@ -311,7 +301,6 @@ static int cmd_add(const char *svc, const char *usr, const char *pwd){
 static int cmd_list(void){
     char *pw = prompt_hidden("Master password: ");
     if(!pw){ fprintf(stderr,"password input failed\n"); return 1; }
-
     Lines L; load_vault(&L, pw);
     for(size_t i=0;i<L.len;i++){
         char buf[MAX_LINE]; strncpy(buf, L.rows[i], sizeof buf); buf[sizeof buf-1]=0;
@@ -324,13 +313,9 @@ static int cmd_list(void){
 }
 
 static int cmd_show(const char *svc_q){
-    if(!svc_q){
-        fprintf(stderr,"Usage: vault_aes show --service S\n");
-        return 1;
-    }
+    if(!svc_q){ fprintf(stderr,"Usage: vault_aes show --service S\n"); return 1; }
     char *pw = prompt_hidden("Master password: ");
     if(!pw){ fprintf(stderr,"password input failed\n"); return 1; }
-
     Lines L; load_vault(&L, pw);
     int found=0;
     for(size_t i=0;i<L.len;i++){
@@ -344,10 +329,109 @@ static int cmd_show(const char *svc_q){
         }
     }
     if(!found) fprintf(stderr, "No entry found for service: %s\n", svc_q);
-
     secure_bzero(pw, strlen(pw)); free(pw);
     lines_free(&L);
     return found?0:1;
+}
+
+/* ----- Phase 4 new commands ----- */
+
+/* Change master password (fresh salt/nonce; re-encrypt everything) */
+static int cmd_rekey(void){
+    char *oldpw = prompt_hidden("Current master password: ");
+    if(!oldpw){ fprintf(stderr,"password input failed\n"); return 1; }
+
+    Lines L; load_vault(&L, oldpw); /* verifies old password & integrity */
+
+    char *new1 = prompt_hidden("New master password: ");
+    char *new2 = prompt_hidden("Confirm new master password: ");
+    if(!new1 || !new2){
+        fprintf(stderr,"password input failed\n");
+        secure_bzero(oldpw, strlen(oldpw)); free(oldpw);
+        if(new1){secure_bzero(new1,strlen(new1)); free(new1);}
+        if(new2){secure_bzero(new2,strlen(new2)); free(new2);}
+        lines_free(&L);
+        return 1;
+    }
+    if(strcmp(new1,new2)!=0){
+        fprintf(stderr,"Passwords do not match.\n");
+        secure_bzero(oldpw, strlen(oldpw)); free(oldpw);
+        secure_bzero(new1, strlen(new1));   free(new1);
+        secure_bzero(new2, strlen(new2));   free(new2);
+        lines_free(&L);
+        return 1;
+    }
+
+    save_vault(&L, new1); /* fresh salt+nonce inside save */
+
+    secure_bzero(oldpw, strlen(oldpw)); free(oldpw);
+    secure_bzero(new1, strlen(new1));   free(new1);
+    secure_bzero(new2, strlen(new2));   free(new2);
+    lines_free(&L);
+    printf("Rekey complete: vault re-encrypted with new master password.\n");
+    return 0;
+}
+
+/* Case-insensitive substring search on service names */
+static int cmd_search(const char *q){
+    if(!q){ fprintf(stderr,"Usage: vault_aes search --q SUBSTRING\n"); return 1; }
+    char *pw = prompt_hidden("Master password: ");
+    if(!pw){ fprintf(stderr,"password input failed\n"); return 1; }
+    Lines L; load_vault(&L, pw);
+    int hits = 0;
+    for(size_t i=0;i<L.len;i++){
+        char buf[MAX_LINE]; strncpy(buf, L.rows[i], sizeof buf); buf[sizeof buf-1]=0;
+        char *svc = strtok(buf, "\t");
+        if(svc && contains_icase(svc, q)){ puts(svc); hits++; }
+    }
+    if(!hits) fprintf(stderr,"No matches for: %s\n", q);
+    secure_bzero(pw, strlen(pw)); free(pw);
+    lines_free(&L);
+    return hits?0:1;
+}
+
+/* Remove a single service entry (exact match), confirm unless --yes */
+static int cmd_remove(const char *svc, int assume_yes){
+    if(!svc){ fprintf(stderr,"Usage: vault_aes remove --service S [--yes]\n"); return 1; }
+    char *pw = prompt_hidden("Master password: ");
+    if(!pw){ fprintf(stderr,"password input failed\n"); return 1; }
+    Lines L; load_vault(&L, pw);
+
+    ssize_t idx = -1;
+    for(size_t i=0;i<L.len;i++){
+        char buf[MAX_LINE]; strncpy(buf, L.rows[i], sizeof buf); buf[sizeof buf-1]=0;
+        char *s = strtok(buf,"\t");
+        if(s && strcmp(s, svc)==0){ idx = (ssize_t)i; break; }
+    }
+    if(idx < 0){
+        fprintf(stderr,"No entry found for service: %s\n", svc);
+        secure_bzero(pw, strlen(pw)); free(pw);
+        lines_free(&L);
+        return 1;
+    }
+
+    if(!assume_yes){
+        fprintf(stderr,"Delete service '%s'? Type YES to confirm: ", svc);
+        char conf[16]={0};
+        if(!fgets(conf,sizeof conf,stdin)) {/* ignore */ }
+        conf[strcspn(conf,"\r\n")] = 0;
+        if(strcmp(conf,"YES")!=0){
+            fprintf(stderr,"Aborted.\n");
+            secure_bzero(pw, strlen(pw)); free(pw);
+            lines_free(&L);
+            return 1;
+        }
+    }
+
+    free(L.rows[(size_t)idx]);
+    for(size_t j=(size_t)idx+1;j<L.len;j++) L.rows[j-1] = L.rows[j];
+    L.len--;
+
+    save_vault(&L, pw);
+    secure_bzero(pw, strlen(pw)); free(pw);
+    lines_free(&L);
+    printf("Removed entry: %s\n", svc);
+    return 0;
 }
 
 /* --------- main --------- */
@@ -356,12 +440,17 @@ int main(int argc, char **argv){
         fprintf(stderr,
             "Usage:\n"
             "  vault_aes init\n"
-            "  vault_aes add --service S --user U --pass P\n"
+            "  vault_aes add     --service S --user U --pass P\n"
             "  vault_aes list\n"
-            "  vault_aes show --service S\n");
+            "  vault_aes show    --service S\n"
+            "  vault_aes rekey\n"
+            "  vault_aes search  --q SUBSTRING\n"
+            "  vault_aes remove  --service S [--yes]\n");
         return 1;
     }
-    if(strcmp(argv[1],"init")==0) return cmd_init();
+
+    if(strcmp(argv[1],"init")==0)  return cmd_init();
+
     if(strcmp(argv[1],"add")==0){
         const char *svc=NULL,*usr=NULL,*pwd=NULL;
         for(int i=2;i<argc;i++){
@@ -371,14 +460,34 @@ int main(int argc, char **argv){
         }
         return cmd_add(svc,usr,pwd);
     }
-    if(strcmp(argv[1],"list")==0) return cmd_list();
+
+    if(strcmp(argv[1],"list")==0)  return cmd_list();
+
     if(strcmp(argv[1],"show")==0){
         const char *svc=NULL;
-        for(int i=2;i<argc;i++){
+        for(int i=2;i<argc;i++)
             if(strcmp(argv[i],"--service")==0 && i+1<argc) svc=argv[++i];
-        }
         return cmd_show(svc);
     }
+
+    if(strcmp(argv[1],"rekey")==0) return cmd_rekey();
+
+    if(strcmp(argv[1],"search")==0){
+        const char *q=NULL;
+        for(int i=2;i<argc;i++)
+            if(strcmp(argv[i],"--q")==0 && i+1<argc) q=argv[++i];
+        return cmd_search(q);
+    }
+
+    if(strcmp(argv[1],"remove")==0){
+        const char *svc=NULL; int yes=0;
+        for(int i=2;i<argc;i++){
+            if(strcmp(argv[i],"--service")==0 && i+1<argc) svc=argv[++i];
+            else if(strcmp(argv[i],"--yes")==0) yes=1;
+        }
+        return cmd_remove(svc, yes);
+    }
+
     fprintf(stderr,"Unknown command: %s\n", argv[1]);
     return 1;
 }
