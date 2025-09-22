@@ -44,3 +44,7 @@ This project is educational: it demonstrates
 This is **not** a production password manager.  
 It is a **learning project** to understand secure coding and encryption in C.
 
+For a full breakdown with screenshots, gdb output, and explanation of stack memory behavior, check out my Medium article:
+
+[BufferOverflow101 Lab — Step-by-Step Walkthrough](https://medium.com/@isheikh_24798/simple-encrypted-password-vault-in-c-lang-0fb453f3f893)
+
