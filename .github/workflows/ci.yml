@@ -39,4 +39,3 @@ jobs:
       - name: Smoke test (run mode, 1s timeout)
         working-directory: Malware_Analyzer
         run: ./malx run /bin/true --timeout 1 --json --pretty
-
