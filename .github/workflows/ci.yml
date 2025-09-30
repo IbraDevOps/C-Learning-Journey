@@ -20,4 +20,3 @@ jobs:
       - name: Smoke test (static analyze /bin/ls)
         working-directory: Malware_Analyzer
         run: ./malx static /bin/ls --json --pretty
-YAML
