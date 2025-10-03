@@ -1,59 +1,33 @@
-name: CI
 
+name: CI
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
 
-permissions:
-  contents: read
-
 jobs:
-  build-test:
+  build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      ######################################################################
-      # Phase 1: Static analyzer build + test
-      ######################################################################
-      - name: "Install build deps (Phase 1)"
+      # Install all build deps once (Phase 1 + Phase 2)
+      - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libssl-dev
+          sudo apt-get install -y build-essential pkg-config libssl-dev libseccomp-dev
 
       - name: Build (Makefile project)
         working-directory: Malware_Analyzer
-        run: make -j"$(nproc)"
+        run: make -j
 
-      - name: Smoke test (static mode)
+      - name: Smoke test (static)
         working-directory: Malware_Analyzer
         run: ./malx static /bin/ls --json --pretty
 
-      ######################################################################
-      # Phase 2: Sandbox run mode build + test
-      ######################################################################
-      - name: "Install extra deps (Phase 2: sandbox)"
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libseccomp-dev
-
-      - name: Smoke test (run mode, 1s timeout)
+      - name: Smoke test (run, 1s timeout)
         working-directory: Malware_Analyzer
         run: ./malx run /bin/true --timeout 1 --json --pretty
 
-      ######################################################################
-      # Artifacts (optional)
-      ######################################################################
-      - name: Upload malx artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: malx-linux-amd64
-          path: Malware_Analyzer/malx
