@@ -32,3 +32,9 @@ jobs:
         working-directory: Malware_Analyzer
         run: ./malx run /bin/true --timeout 1 --json --pretty
 
+
+      - name: Smoke test (trace, 2s)
+        working-directory: Malware_Analyzer
+        run: ./malx trace /bin/true --timeout 2 --max 50 --json --pretty
+
+
