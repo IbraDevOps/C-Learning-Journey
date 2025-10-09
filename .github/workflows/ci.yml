@@ -1,8 +1,7 @@
-
 name: CI
 on:
   push:
-    branches: [ "main", "fix/ci-clean" ]  # [ "main" ]
+    branches: [ "main", "fix/ci-clean" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
@@ -14,27 +13,28 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # Install all build deps once (Phase 1 + Phase 2)
       - name: Install build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libssl-dev libseccomp-dev
 
-      - name: Build (Makefile project)
-        working-directory: Malware_Analyzer
-        run: make -j
+      - name: Build
+        run: make -C Malware_Analyzer -j
 
-      - name: Smoke test (static)
-        working-directory: Malware_Analyzer
-        run: ./malx static /bin/ls --json --pretty
+      - name: Smoke - static
+        run: ./Malware_Analyzer/malx static /bin/ls --json
 
-      - name: Smoke test (run, 1s timeout)
-        working-directory: Malware_Analyzer
-        run: ./malx run /bin/true --timeout 1 --json --pretty
+      # Expect timeout -> program should exit with 124
+      - name: Smoke - timeout returns 124
+        shell: bash
+        run: |
+          set +e
+          ./Malware_Analyzer/malx run /bin/sleep --timeout 1 --json -- -- 5
+          code=$?
+          echo "exit=$code"
+          if [ "$code" -ne 124 ]; then
+            echo "Expected exit code 124 on timeout"; exit 1
+          fi
 
-
-      - name: Smoke test (trace, 2s)
-        working-directory: Malware_Analyzer
-        run: ./malx trace /bin/true --timeout 2 --max 50 --json --pretty
-
-
+      - name: Smoke - trace (first 30 syscalls)
+        run: ./Malware_Analyzer/malx trace /bin/ls --max 30 --json
