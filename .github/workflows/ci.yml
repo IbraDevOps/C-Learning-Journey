@@ -1,1 +1,44 @@
-<<PASTE THE YAML ABOVE>>
+name: CI
+
+on:
+  push:
+    branches: [ "main", "fix/ci-clean" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev libseccomp-dev
+
+      - name: Build
+        run: make -C Malware_Analyzer -j
+
+      # Static smoke
+      - name: Smoke - static /bin/ls
+        run: ./Malware_Analyzer/malx static /bin/ls --json --pretty
+
+      # Timeout smoke (must return 124)
+      - name: Smoke - timeout returns 124
+        shell: bash
+        run: |
+          set +e
+          ./Malware_Analyzer/malx run /bin/sleep --timeout 1 --json -- -- 5
+          code=$?
+          echo "exit=$code"
+          if [ "$code" -ne 124 ]; then
+            echo "Expected exit code 124 on timeout"; exit 1
+          fi
+
+      # Trace smoke (NO --timeout here)
+      - name: Smoke - trace first 30 syscalls
+        run: ./Malware_Analyzer/malx trace /bin/ls --max 30 --json --pretty
+
